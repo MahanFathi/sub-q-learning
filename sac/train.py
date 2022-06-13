@@ -455,7 +455,7 @@ def train(
       # Save current policy.
       params = _unpmap(
           (training_state.normalizer_params, training_state.policy_params))
-      path = f'{logger.get_logdir_path()}_/_{current_step}.pkl'
+      path = f'{logger.get_logdir_path(cfg)}/{current_step}.pkl'
       model.save_params(path, params)
 
       # Run evals.
