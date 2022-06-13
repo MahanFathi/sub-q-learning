@@ -2,7 +2,7 @@ from typing import Union, Mapping
 from brax.training import types
 import wandb
 from flax.metrics import tensorboard
-from yacs.config import CfgNode
+from ml_collections import FrozenConfigDict
 
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +12,7 @@ LOG_NAME = None
 LOG_PATH = None
 TB_SUMMARY_WRITER = None
 
-def get_log_name(cfg: CfgNode) -> str:
+def get_log_name(cfg: FrozenConfigDict) -> str:
   global LOG_NAME
   if LOG_NAME:
       return LOG_NAME
@@ -23,7 +23,7 @@ def get_log_name(cfg: CfgNode) -> str:
    )
   return log_name
 
-def get_logdir_path(cfg: CfgNode) -> Path:
+def get_logdir_path(cfg: FrozenConfigDict) -> Path:
   global LOG_PATH
   if LOG_PATH:
       return LOG_PATH
@@ -34,11 +34,11 @@ def get_logdir_path(cfg: CfgNode) -> Path:
   LOG_PATH = log_path
   return log_path
 
-def get_summary_writer(cfg: CfgNode) -> tensorboard.SummaryWriter:
+def get_summary_writer(cfg: FrozenConfigDict) -> tensorboard.SummaryWriter:
   log_path = get_logdir_path(cfg)
   return tensorboard.SummaryWriter(str(log_path))
 
-def init_wandb(cfg: CfgNode):
+def init_wandb(cfg: FrozenConfigDict):
   wandb.init(
     project="sub-q-learning",
     dir=get_logdir_path(cfg),
@@ -46,7 +46,7 @@ def init_wandb(cfg: CfgNode):
     config=cfg.to_dict(),
   )
 
-def log_metrics(cfg: CfgNode, num_steps: int, metrics: Mapping[str, Union[int, float]]):
+def log_metrics(cfg: FrozenConfigDict, num_steps: int, metrics: Mapping[str, Union[int, float]]):
   global TB_SUMMARY_WRITER
   if not TB_SUMMARY_WRITER:
     TB_SUMMARY_WRITER = get_summary_writer(cfg)
