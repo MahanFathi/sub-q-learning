@@ -322,7 +322,7 @@ def train(
              ReplayBufferState]:
     policy = make_policy((normalizer_params, policy_params))
     env_state, transitions = acting.actor_step(
-        env, env_state, policy, key, extra_fields=('truncation',))
+        env, env_state, policy, key, reward_dict, extra_fields=('truncation',))
 
     normalizer_params = running_statistics.update(
         normalizer_params,

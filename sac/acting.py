@@ -32,8 +32,8 @@ def actor_step(
     env_state: envs.State,
     policy: Policy,
     key: PRNGKey,
-    extra_fields: Sequence[str] = (),
     reward_dict: Mapping[str, float],
+    extra_fields: Sequence[str] = (),
 ) -> Tuple[envs.State, Transition]:
   """Collect data."""
   actions, policy_extras = policy(env_state.obs, key)

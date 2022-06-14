@@ -135,7 +135,7 @@ def make_losses(sac_network: sac_networks.SACNetworks, reward_scaling: float,
       sub_q_params,
     )
     min_sub_q = jax.tree_map(lambda q: jnp.min(q, axis=-1), sub_q_action)
-    actor_loss = alpha * log_prob - jax.sum(jax.flatten_util.ravel_pytree(min_sub_q)[0])
+    actor_loss = alpha * log_prob - jax.sum(jax.flatten_util.ravel_pytree(min_sub_q)[0]) # TODO: handle linear weights from reward_dict
     return jnp.mean(actor_loss)
 
   return alpha_loss, sub_q_loss, sub_policy_loss, policy_loss
