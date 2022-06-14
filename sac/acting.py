@@ -58,6 +58,7 @@ def generate_unroll(
     policy: Policy,
     key: PRNGKey,
     unroll_length: int,
+    reward_dict: Mapping[str, float],
     extra_fields: Sequence[str] = ()
 ) -> Tuple[envs.State, Transition]:
   """Collect trajectories of given unroll_length."""
@@ -67,7 +68,7 @@ def generate_unroll(
     state, current_key = carry
     current_key, next_key = jax.random.split(current_key)
     nstate, transition = actor_step(
-        env, state, policy, current_key, extra_fields=extra_fields)
+        env, state, policy, current_key, reward_dict, extra_fields=extra_fields)
     return (nstate, next_key), transition
 
   (final_state, _), data = jax.lax.scan(
@@ -82,7 +83,8 @@ class Evaluator:
   def __init__(self, eval_env: envs.Env,
                eval_policy_fn: Callable[[PolicyParams],
                                         Policy], num_eval_envs: int,
-               episode_length: int, action_repeat: int, key: PRNGKey):
+               episode_length: int, action_repeat: int, key: PRNGKey,
+               reward_dict: Mapping[str, float]):
     """Init.
 
     Args:
@@ -107,7 +109,9 @@ class Evaluator:
           eval_first_state,
           eval_policy_fn(policy_params),
           key,
-          unroll_length=episode_length // action_repeat)[0]
+          unroll_length=episode_length // action_repeat,
+          reward_dict=reward_dict,
+      )[0]
 
     self._generate_eval_unroll = jax.jit(generate_eval_unroll)
     self._steps_per_unroll = episode_length * num_eval_envs

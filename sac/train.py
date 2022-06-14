@@ -59,9 +59,9 @@ def _init_training_state(
     key: PRNGKey, obs_size: int, local_devices_to_use: int,
     sac_network: sac_networks.SACNetworks,
     alpha_optimizer: optax.GradientTransformation,
-    policy_optimizer: optax.GradientTransformation,
-    sub_policy_optimizer: optax.GradientTransformation,
     sub_q_optimizer: optax.GradientTransformation,
+    sub_policy_optimizer: optax.GradientTransformation,
+    policy_optimizer: optax.GradientTransformation,
     reward_dict: Mapping[str, float],
 ) -> TrainingState:
   """Inits the training state and replicates it over devices."""
@@ -81,7 +81,7 @@ def _init_training_state(
   sub_policy_optimizer_state = sub_policy_optimizer.init(sub_policy_params)
 
   sub_q_params = jax.tree_map(sac_network.q_network.init, keydict_sub_q)
-  sub_q_optimizer_state = q_optimizer.init(sub_q_params)
+  sub_q_optimizer_state = sub_q_optimizer.init(sub_q_params)
 
   normalizer_params = running_statistics.init_state(
       specs.Array((obs_size,), jnp.float32))
@@ -130,7 +130,7 @@ def train(
   max_replay_size = cfg.TRAIN.MAX_REPLAY_SIZE
   grad_updates_per_step = cfg.TRAIN.GRAD_UPDATES_PER_STEP
   network_factory: types.NetworkFactory[sac_networks.SACNetworks] = sac_networks.make_sac_networks
-  reward_dict = cfg.ENV.REWARD_DICT[cfg.ENV.ENV_NAME]
+  reward_dict = dict(cfg.ENV.REWARD_DICT[cfg.ENV.ENV_NAME])
 
   # process bookkeeping
   process_id = jax.process_index()
@@ -214,7 +214,7 @@ def train(
   alpha_update = gradients.gradient_update_fn(
       alpha_loss, alpha_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
   sub_q_update = gradients.gradient_update_fn(
-      sub_q_loss, q_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
+      sub_q_loss, sub_q_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
   sub_policy_update = gradients.gradient_update_fn(
       sub_policy_loss, sub_policy_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
   policy_update = gradients.gradient_update_fn(
@@ -276,10 +276,10 @@ def train(
         sub_q_params=sub_q_params,
         sub_q_optimizer_state=sub_q_optimizer_state,
         sub_policy_params=sub_policy_params,
-        sub_policy_optimizer_state=policy_optimizer_state,
+        sub_policy_optimizer_state=sub_policy_optimizer_state,
         policy_params=policy_params,
         policy_optimizer_state=policy_optimizer_state,
-        sub_target_q_params=sub_new_target_q_params,
+        sub_target_q_params=new_sub_target_q_params,
         gradient_steps=training_state.gradient_steps + 1,
         env_steps=training_state.env_steps,
         alpha_optimizer_state=alpha_optimizer_state,
@@ -407,8 +407,11 @@ def train(
       local_devices_to_use=local_devices_to_use,
       sac_network=sac_network,
       alpha_optimizer=alpha_optimizer,
+      sub_q_optimizer=sub_q_optimizer,
+      sub_policy_optimizer=sub_policy_optimizer,
       policy_optimizer=policy_optimizer,
-      q_optimizer=q_optimizer)
+      reward_dict=reward_dict,
+  )
   del global_key
 
   local_key, rb_key, env_key, eval_key = jax.random.split(local_key, 4)
@@ -429,7 +432,9 @@ def train(
       num_eval_envs=num_eval_envs,
       episode_length=episode_length,
       action_repeat=action_repeat,
-      key=eval_key)
+      key=eval_key,
+      reward_dict=reward_dict,
+  )
 
   # Run initial eval
   if process_id == 0 and num_evals > 1:
