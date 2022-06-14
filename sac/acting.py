@@ -22,9 +22,9 @@ from brax.training.types import Metrics
 from brax.training.types import Policy
 from brax.training.types import PolicyParams
 from brax.training.types import PRNGKey
-from sac.train import Transition # TODO: fix this
 import jax
 import numpy as np
+from util.types import Transition
 
 
 def actor_step(
