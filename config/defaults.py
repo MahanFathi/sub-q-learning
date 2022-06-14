@@ -15,6 +15,19 @@ _C.MOCK_TPU = False
 # ---------------------------------------------------------------------------- #
 _C.ENV = ml_collections.ConfigDict()
 _C.ENV.ENV_NAME = "walker2d"
+_C.ENV.REWARD_DICT = {
+    "ant": {
+        "reward_forward": 1.0,
+        "reward_survive": 1.0,
+        "reward_ctrl": 1.0,
+        "reward_contact": 1.0,
+    },
+    "walker2d": {
+        "reward_forward": 1.0,
+        "reward_ctrl": 1.0,
+        "reward_healthy": 1.0,
+    },
+}
 
 # ---------------------------------------------------------------------------- #
 # Training

@@ -18,13 +18,12 @@ See: https://arxiv.org/pdf/1812.05905.pdf
 """
 
 import time
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple, Mapping
 
 from absl import logging
 from brax import envs
 from brax.envs import wrappers
 from brax.io import model
-from brax.training import acting
 from brax.training import gradients
 from brax.training import pmap
 from brax.training import replay_buffers
@@ -33,6 +32,7 @@ from brax.training.acme import running_statistics
 from brax.training.acme import specs
 from sac import losses as sac_losses
 from sac import networks as sac_networks
+from sac import acting
 from brax.training.types import Params
 from brax.training.types import PRNGKey
 import flax
@@ -43,7 +43,6 @@ from ml_collections import FrozenConfigDict
 from util import logger
 
 Metrics = types.Metrics
-Transition = types.Transition
 InferenceParams = Tuple[running_statistics.NestedMeanStd, Params]
 
 ReplayBufferState = Any
@@ -51,14 +50,27 @@ ReplayBufferState = Any
 _PMAP_AXIS_NAME = 'i'
 
 
+class Transition(NamedTuple):
+  """Container for a transition."""
+  observation: NestedArray
+  action: NestedArray
+  reward: NestedArray
+  sub_rewards: NestedArray
+  discount: NestedArray
+  next_observation: NestedArray
+  extras: NestedArray = ()
+
+
 @flax.struct.dataclass
 class TrainingState:
   """Contains training state for the learner."""
-  policy_optimizer_state: optax.OptState
   policy_params: Params
-  q_optimizer_state: optax.OptState
-  q_params: Params
-  target_q_params: Params
+  policy_optimizer_state: optax.OptState
+  sub_policy_params: Params
+  sub_policy_optimizer_state: optax.OptState
+  sub_q_params: Params
+  sub_q_optimizer_state: optax.OptState
+  sub_target_q_params: Params
   gradient_steps: jnp.ndarray
   env_steps: jnp.ndarray
   alpha_optimizer_state: optax.OptState
@@ -75,26 +87,40 @@ def _init_training_state(
     sac_network: sac_networks.SACNetworks,
     alpha_optimizer: optax.GradientTransformation,
     policy_optimizer: optax.GradientTransformation,
-    q_optimizer: optax.GradientTransformation) -> TrainingState:
+    sub_policy_optimizer: optax.GradientTransformation,
+    sub_q_optimizer: optax.GradientTransformation,
+    reward_dict: Mapping[str, float],
+) -> TrainingState:
   """Inits the training state and replicates it over devices."""
-  key_policy, key_q = jax.random.split(key)
+  key_policy, key_sub_policy, key_sub_q = jax.random.split(key, 3)
+  keydict_sub_policy = {k: jax.random.fold_in(key_sub_policy, hash(k))
+                        for k in reward_dict.keys()}
+  keydict_sub_q = {k: jax.random.fold_in(key_sub_q, hash(k))
+                        for k in reward_dict.keys()}
+
   log_alpha = jnp.asarray(0., dtype=jnp.float32)
   alpha_optimizer_state = alpha_optimizer.init(log_alpha)
 
   policy_params = sac_network.policy_network.init(key_policy)
   policy_optimizer_state = policy_optimizer.init(policy_params)
-  q_params = sac_network.q_network.init(key_q)
-  q_optimizer_state = q_optimizer.init(q_params)
+
+  sub_policy_params = jax.tree_map(sac_network.policy_network.init, keydict_sub_policy)
+  sub_policy_optimizer_state = sub_policy_optimizer.init(sub_policy_params)
+
+  sub_q_params = jax.tree_map(sac_network.q_network.init, keydict_sub_q)
+  sub_q_optimizer_state = q_optimizer.init(sub_q_params)
 
   normalizer_params = running_statistics.init_state(
       specs.Array((obs_size,), jnp.float32))
 
   training_state = TrainingState(
-      policy_optimizer_state=policy_optimizer_state,
       policy_params=policy_params,
-      q_optimizer_state=q_optimizer_state,
-      q_params=q_params,
-      target_q_params=q_params,
+      policy_optimizer_state=policy_optimizer_state,
+      sub_policy_params=sub_policy_params,
+      sub_policy_optimizer_state=sub_policy_optimizer_state,
+      sub_q_params=sub_q_params,
+      sub_q_optimizer_state=sub_q_optimizer_state,
+      sub_target_q_params=sub_q_params,
       gradient_steps=jnp.zeros(()),
       env_steps=jnp.zeros(()),
       alpha_optimizer_state=alpha_optimizer_state,
@@ -131,6 +157,7 @@ def train(
   max_replay_size = cfg.TRAIN.MAX_REPLAY_SIZE
   grad_updates_per_step = cfg.TRAIN.GRAD_UPDATES_PER_STEP
   network_factory: types.NetworkFactory[sac_networks.SACNetworks] = sac_networks.make_sac_networks
+  reward_dict = cfg.ENV.REWARD_DICT[cfg.ENV.ENV_NAME]
 
   # process bookkeeping
   process_id = jax.process_index()
@@ -182,9 +209,9 @@ def train(
   make_policy = sac_networks.make_inference_fn(sac_network)
 
   alpha_optimizer = optax.adam(learning_rate=3e-4)
-
+  sub_q_optimizer = optax.adam(learning_rate=learning_rate)
+  sub_policy_optimizer = optax.adam(learning_rate=learning_rate)
   policy_optimizer = optax.adam(learning_rate=learning_rate)
-  q_optimizer = optax.adam(learning_rate=learning_rate)
 
   dummy_obs = jnp.zeros((obs_size,))
   dummy_action = jnp.zeros((action_size,))
@@ -192,6 +219,7 @@ def train(
       observation=dummy_obs,
       action=dummy_action,
       reward=0.,
+      sub_rewards=reward_dict,
       discount=0.,
       next_observation=dummy_obs,
       extras={
@@ -205,24 +233,26 @@ def train(
       dummy_data_sample=dummy_transition,
       sample_batch_size=batch_size * grad_updates_per_step // device_count)
 
-  alpha_loss, critic_loss, actor_loss = sac_losses.make_losses(
+  alpha_loss, sub_q_loss, sub_policy_loss, policy_loss = sac_losses.make_losses(
       sac_network=sac_network,
       reward_scaling=reward_scaling,
       discounting=discounting,
       action_size=action_size)
   alpha_update = gradients.gradient_update_fn(
       alpha_loss, alpha_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
-  critic_update = gradients.gradient_update_fn(
-      critic_loss, q_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
-  actor_update = gradients.gradient_update_fn(
-      actor_loss, policy_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
+  sub_q_update = gradients.gradient_update_fn(
+      sub_q_loss, q_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
+  sub_policy_update = gradients.gradient_update_fn(
+      sub_policy_loss, sub_policy_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
+  policy_update = gradients.gradient_update_fn(
+      policy_loss, policy_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
 
   def sgd_step(
       carry: Tuple[TrainingState, PRNGKey],
       transitions: Transition) -> Tuple[Tuple[TrainingState, PRNGKey], Metrics]:
     training_state, key = carry
 
-    key, key_alpha, key_critic, key_actor = jax.random.split(key, 4)
+    key, key_alpha, key_sub_q, key_sub_policy, key_policy = jax.random.split(key, 5)
 
     alpha_loss, alpha_params, alpha_optimizer_state = alpha_update(
         training_state.alpha_params,
@@ -232,40 +262,51 @@ def train(
         key_alpha,
         optimizer_state=training_state.alpha_optimizer_state)
     alpha = jnp.exp(training_state.alpha_params)
-    critic_loss, q_params, q_optimizer_state = critic_update(
-        training_state.q_params,
-        training_state.policy_params,
+    sub_q_loss, sub_q_params, sub_q_optimizer_state = sub_q_update(
+        training_state.sub_q_params,
+        training_state.sub_policy_params,
         training_state.normalizer_params,
-        training_state.target_q_params,
+        training_state.sub_target_q_params,
         alpha,
         transitions,
-        key_critic,
-        optimizer_state=training_state.q_optimizer_state)
-    actor_loss, policy_params, policy_optimizer_state = actor_update(
-        training_state.policy_params,
+        key_sub_q,
+        optimizer_state=training_state.sub_q_optimizer_state)
+    sub_policy_loss, sub_policy_params, sub_policy_optimizer_state = sub_policy_update(
+        training_state.sub_policy_params,
         training_state.normalizer_params,
-        training_state.q_params,
+        training_state.sub_q_params,
         alpha,
         transitions,
-        key_actor,
+        key_sub_policy,
+        optimizer_state=training_state.sub_policy_optimizer_state)
+    policy_loss, policy_params, policy_optimizer_state = policy_update(
+        training_state.policy_params,
+        training_state.normalizer_params,
+        training_state.sub_q_params,
+        alpha,
+        transitions,
+        key_policy,
         optimizer_state=training_state.policy_optimizer_state)
 
-    new_target_q_params = jax.tree_map(lambda x, y: x * (1 - tau) + y * tau,
-                                       training_state.target_q_params, q_params)
+    new_sub_target_q_params = jax.tree_map(lambda x, y: x * (1 - tau) + y * tau,
+                                       training_state.sub_target_q_params, sub_q_params)
 
     metrics = {
-        'critic_loss': critic_loss,
-        'actor_loss': actor_loss,
         'alpha_loss': alpha_loss,
+        'sub_q_loss': sub_q_loss,
+        'sub_policy_loss': sub_policy_loss,
+        'policy_loss': policy_loss,
         'alpha': jnp.exp(alpha_params),
     }
 
     new_training_state = TrainingState(
-        policy_optimizer_state=policy_optimizer_state,
+        sub_q_params=sub_q_params,
+        sub_q_optimizer_state=sub_q_optimizer_state,
+        sub_policy_params=sub_policy_params,
+        sub_policy_optimizer_state=policy_optimizer_state,
         policy_params=policy_params,
-        q_optimizer_state=q_optimizer_state,
-        q_params=q_params,
-        target_q_params=new_target_q_params,
+        policy_optimizer_state=policy_optimizer_state,
+        sub_target_q_params=sub_new_target_q_params,
         gradient_steps=training_state.gradient_steps + 1,
         env_steps=training_state.env_steps,
         alpha_optimizer_state=alpha_optimizer_state,
