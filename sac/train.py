@@ -235,6 +235,7 @@ def train(
         key_alpha,
         optimizer_state=training_state.alpha_optimizer_state)
     alpha = jnp.exp(training_state.alpha_params)
+    alpha = jnp.zeros_like(alpha) # DDPG style for now
     sub_q_loss, sub_q_params, sub_q_optimizer_state = sub_q_update(
         training_state.sub_q_params,
         training_state.sub_policy_params,

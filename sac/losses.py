@@ -54,7 +54,7 @@ def make_losses(sac_network: sac_networks.SACNetworks, reward_scaling: float,
     next_q = q_network.apply(normalizer_params, target_q_params,
                              transitions.next_observation, next_action)
     next_v = jnp.min(next_q, axis=-1) - alpha * next_log_prob
-    target_q = jax.lax.stop_gradient(transitions.reward * reward_scaling +
+    target_q = jax.lax.stop_gradient(reward * reward_scaling +
                                      transitions.discount * discounting *
                                      next_v)
     q_error = q_old_action - jnp.expand_dims(target_q, -1)
