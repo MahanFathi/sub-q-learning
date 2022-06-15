@@ -234,7 +234,7 @@ def train(
       transitions: Transition) -> Tuple[Tuple[TrainingState, PRNGKey], Metrics]:
     training_state, key = carry
 
-    key, key_alpha, key_sub_alpha, key_sub_q, key_sub_policy, key_policy = jax.random.split(key, 5)
+    key, key_alpha, key_sub_alpha, key_sub_q, key_sub_policy, key_policy = jax.random.split(key, 6)
 
     alpha_loss, alpha_params, alpha_optimizer_state = alpha_update(
         training_state.alpha_params,
