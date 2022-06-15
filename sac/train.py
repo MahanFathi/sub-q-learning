@@ -59,6 +59,7 @@ def _init_training_state(
     key: PRNGKey, obs_size: int, local_devices_to_use: int,
     sac_network: sac_networks.SACNetworks,
     alpha_optimizer: optax.GradientTransformation,
+    sub_alpha_optimizer: optax.GradientTransformation,
     sub_q_optimizer: optax.GradientTransformation,
     sub_policy_optimizer: optax.GradientTransformation,
     policy_optimizer: optax.GradientTransformation,
@@ -73,6 +74,9 @@ def _init_training_state(
 
   log_alpha = jnp.asarray(0., dtype=jnp.float32)
   alpha_optimizer_state = alpha_optimizer.init(log_alpha)
+
+  log_sub_alpha = {k: jnp.asarray(0., dtype=jnp.float32) for k in reward_dict.keys()}
+  sub_alpha_optimizer_state = sub_alpha_optimizer.init(log_sub_alpha)
 
   policy_params = sac_network.policy_network.init(key_policy)
   policy_optimizer_state = policy_optimizer.init(policy_params)
@@ -96,8 +100,10 @@ def _init_training_state(
       sub_target_q_params=sub_q_params,
       gradient_steps=jnp.zeros(()),
       env_steps=jnp.zeros(()),
-      alpha_optimizer_state=alpha_optimizer_state,
       alpha_params=log_alpha,
+      alpha_optimizer_state=alpha_optimizer_state,
+      sub_alpha_params=log_sub_alpha,
+      sub_alpha_optimizer_state=sub_alpha_optimizer_state,
       normalizer_params=normalizer_params)
   return jax.device_put_replicated(training_state,
                                    jax.local_devices()[:local_devices_to_use])
@@ -182,6 +188,7 @@ def train(
   make_policy = sac_networks.make_inference_fn(sac_network)
 
   alpha_optimizer = optax.adam(learning_rate=3e-4)
+  sub_alpha_optimizer = optax.adam(learning_rate=3e-4)
   sub_q_optimizer = optax.adam(learning_rate=learning_rate)
   sub_policy_optimizer = optax.adam(learning_rate=learning_rate)
   policy_optimizer = optax.adam(learning_rate=learning_rate)
@@ -206,13 +213,15 @@ def train(
       dummy_data_sample=dummy_transition,
       sample_batch_size=batch_size * grad_updates_per_step // device_count)
 
-  alpha_loss, sub_q_loss, sub_policy_loss, policy_loss = sac_losses.make_losses(
+  alpha_loss, sub_alpha_loss, sub_q_loss, sub_policy_loss, policy_loss = sac_losses.make_losses(
       sac_network=sac_network,
       reward_scaling=reward_scaling,
       discounting=discounting,
       action_size=action_size)
   alpha_update = gradients.gradient_update_fn(
       alpha_loss, alpha_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
+  sub_alpha_update = gradients.gradient_update_fn(
+      sub_alpha_loss, sub_alpha_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
   sub_q_update = gradients.gradient_update_fn(
       sub_q_loss, sub_q_optimizer, pmap_axis_name=_PMAP_AXIS_NAME)
   sub_policy_update = gradients.gradient_update_fn(
@@ -225,7 +234,7 @@ def train(
       transitions: Transition) -> Tuple[Tuple[TrainingState, PRNGKey], Metrics]:
     training_state, key = carry
 
-    key, key_alpha, key_sub_q, key_sub_policy, key_policy = jax.random.split(key, 5)
+    key, key_alpha, key_sub_alpha, key_sub_q, key_sub_policy, key_policy = jax.random.split(key, 5)
 
     alpha_loss, alpha_params, alpha_optimizer_state = alpha_update(
         training_state.alpha_params,
@@ -234,13 +243,21 @@ def train(
         transitions,
         key_alpha,
         optimizer_state=training_state.alpha_optimizer_state)
+    sub_alpha_loss, sub_alpha_params, sub_alpha_optimizer_state = alpha_update(
+        training_state.sub_alpha_params,
+        training_state.sub_policy_params,
+        training_state.normalizer_params,
+        transitions,
+        key_sub_alpha,
+        optimizer_state=training_state.alpha_optimizer_state)
     alpha = jnp.exp(training_state.alpha_params)
+    sub_alpha = jax.tree_map(jnp.exp, training_state.sub_alpha_params)
     sub_q_loss, sub_q_params, sub_q_optimizer_state = sub_q_update(
         training_state.sub_q_params,
         training_state.sub_policy_params,
         training_state.normalizer_params,
         training_state.sub_target_q_params,
-        alpha,
+        sub_alpha,
         transitions,
         key_sub_q,
         optimizer_state=training_state.sub_q_optimizer_state)
@@ -248,7 +265,7 @@ def train(
         training_state.sub_policy_params,
         training_state.normalizer_params,
         training_state.sub_q_params,
-        alpha,
+        sub_alpha,
         transitions,
         key_sub_policy,
         optimizer_state=training_state.sub_policy_optimizer_state)
@@ -266,6 +283,7 @@ def train(
 
     metrics = {
         'alpha_loss': alpha_loss,
+        'sub_alpha_loss': sub_alpha_loss,
         'sub_q_loss': sub_q_loss,
         'sub_policy_loss': sub_policy_loss,
         'policy_loss': policy_loss,
@@ -284,6 +302,8 @@ def train(
         env_steps=training_state.env_steps,
         alpha_optimizer_state=alpha_optimizer_state,
         alpha_params=alpha_params,
+        sub_alpha_optimizer_state=sub_alpha_optimizer_state,
+        sub_alpha_params=sub_alpha_params,
         normalizer_params=training_state.normalizer_params)
     return (new_training_state, key), metrics
 
@@ -407,6 +427,7 @@ def train(
       local_devices_to_use=local_devices_to_use,
       sac_network=sac_network,
       alpha_optimizer=alpha_optimizer,
+      sub_alpha_optimizer=sub_alpha_optimizer,
       sub_q_optimizer=sub_q_optimizer,
       sub_policy_optimizer=sub_policy_optimizer,
       policy_optimizer=policy_optimizer,

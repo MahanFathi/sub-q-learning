@@ -54,7 +54,7 @@ def make_losses(sac_network: sac_networks.SACNetworks, reward_scaling: float,
     next_q = q_network.apply(normalizer_params, target_q_params,
                              transitions.next_observation, next_action)
     next_v = jnp.min(next_q, axis=-1) - alpha * next_log_prob
-    target_q = jax.lax.stop_gradient(transitions.reward * reward_scaling +
+    target_q = jax.lax.stop_gradient(reward * reward_scaling +
                                      transitions.discount * discounting *
                                      next_v)
     q_error = q_old_action - jnp.expand_dims(target_q, -1)
@@ -94,28 +94,39 @@ def make_losses(sac_network: sac_networks.SACNetworks, reward_scaling: float,
     alpha_loss = alpha * jax.lax.stop_gradient(-log_prob - target_entropy)
     return jnp.mean(alpha_loss)
 
-  def sub_q_loss(sub_q_params: Params, sub_policy_params: Params,
-                  normalizer_params: Any, sub_target_q_params: Params,
-                  alpha: jnp.ndarray, transitions: Transition,
-                  key: PRNGKey) -> jnp.ndarray:
-
+  def sub_alpha_loss(sub_log_alpha: jnp.ndarray, sub_policy_params: Params,
+                 normalizer_params: Any, transitions: Transition,
+                 key: PRNGKey) -> jnp.ndarray:
     keydict = {k: jax.random.fold_in(key, hash(k)) for k in sub_q_params.keys()}
     losses = jax.tree_multimap(
-      lambda key, q_params, policy_params, target_q_params, reward: _critic_loss(
+      lambda key, log_alpha, policy_params: alpha_loss(
+        log_alpha, policy_params, normalizer_params, transitions, key),
+      keydict, sub_log_alpha, sub_policy_params,
+    )
+    sub_alpha_loss = jnp.sum(jax.flatten_util.ravel_pytree(losses)[0])
+    return sub_alpha_loss
+
+  def sub_q_loss(sub_q_params: Params, sub_policy_params: Params,
+                  normalizer_params: Any, sub_target_q_params: Params,
+                  sub_alpha: jnp.ndarray, transitions: Transition,
+                  key: PRNGKey) -> jnp.ndarray:
+    keydict = {k: jax.random.fold_in(key, hash(k)) for k in sub_q_params.keys()}
+    losses = jax.tree_multimap(
+      lambda key, q_params, policy_params, target_q_params, reward, alpha: _critic_loss(
         q_params, policy_params, normalizer_params, target_q_params, alpha, transitions, reward, key),
-      keydict, sub_q_params, sub_policy_params, sub_target_q_params, transitions.sub_rewards,
+      keydict, sub_q_params, sub_policy_params, sub_target_q_params, transitions.sub_rewards, sub_alpha,
     )
     sub_q_loss = jnp.sum(jax.flatten_util.ravel_pytree(losses)[0])
     return sub_q_loss
 
   def sub_policy_loss(sub_policy_params: Params, normalizer_params: Any,
-                 sub_q_params: Params, alpha: jnp.ndarray, transitions: Transition,
+                 sub_q_params: Params, sub_alpha: jnp.ndarray, transitions: Transition,
                  key: PRNGKey) -> jnp.ndarray:
     keydict = {k: jax.random.fold_in(key, hash(k)) for k in sub_q_params.keys()}
     losses = jax.tree_multimap(
-      lambda key, policy_params, q_params: _actor_loss(
+      lambda key, policy_params, q_params, alpha: _actor_loss(
         policy_params, normalizer_params, q_params, alpha, transitions, key),
-      keydict, sub_policy_params, sub_q_params,
+      keydict, sub_policy_params, sub_q_params, sub_alpha,
     )
     sub_policy_loss = jnp.sum(jax.flatten_util.ravel_pytree(losses)[0])
     return sub_policy_loss
@@ -140,4 +151,4 @@ def make_losses(sac_network: sac_networks.SACNetworks, reward_scaling: float,
     actor_loss = alpha * log_prob - jnp.sum(jax.flatten_util.ravel_pytree(min_sub_q)[0]) # TODO: handle linear weights from reward_dict
     return jnp.mean(actor_loss)
 
-  return alpha_loss, sub_q_loss, sub_policy_loss, policy_loss
+  return alpha_loss, sub_alpha_loss, sub_q_loss, sub_policy_loss, policy_loss

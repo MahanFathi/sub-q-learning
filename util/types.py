@@ -28,6 +28,8 @@ class TrainingState:
   sub_target_q_params: Params
   gradient_steps: jnp.ndarray
   env_steps: jnp.ndarray
-  alpha_optimizer_state: optax.OptState
   alpha_params: Params
+  alpha_optimizer_state: optax.OptState
+  sub_alpha_params: Params
+  sub_alpha_optimizer_state: optax.OptState
   normalizer_params: running_statistics.RunningStatisticsState
