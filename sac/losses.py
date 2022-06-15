@@ -97,7 +97,7 @@ def make_losses(sac_network: sac_networks.SACNetworks, reward_scaling: float,
   def sub_alpha_loss(sub_log_alpha: jnp.ndarray, sub_policy_params: Params,
                  normalizer_params: Any, transitions: Transition,
                  key: PRNGKey) -> jnp.ndarray:
-    keydict = {k: jax.random.fold_in(key, hash(k)) for k in sub_q_params.keys()}
+    keydict = {k: jax.random.fold_in(key, hash(k)) for k in sub_log_alpha.keys()}
     losses = jax.tree_multimap(
       lambda key, log_alpha, policy_params: alpha_loss(
         log_alpha, policy_params, normalizer_params, transitions, key),

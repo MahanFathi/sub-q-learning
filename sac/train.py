@@ -243,13 +243,13 @@ def train(
         transitions,
         key_alpha,
         optimizer_state=training_state.alpha_optimizer_state)
-    sub_alpha_loss, sub_alpha_params, sub_alpha_optimizer_state = alpha_update(
+    sub_alpha_loss, sub_alpha_params, sub_alpha_optimizer_state = sub_alpha_update(
         training_state.sub_alpha_params,
         training_state.sub_policy_params,
         training_state.normalizer_params,
         transitions,
         key_sub_alpha,
-        optimizer_state=training_state.alpha_optimizer_state)
+        optimizer_state=training_state.sub_alpha_optimizer_state)
     alpha = jnp.exp(training_state.alpha_params)
     sub_alpha = jax.tree_map(jnp.exp, training_state.sub_alpha_params)
     sub_q_loss, sub_q_params, sub_q_optimizer_state = sub_q_update(
